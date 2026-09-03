@@ -1991,7 +1991,7 @@
     '
   model: "[tt-train] tinyllama_1_1b_ddp32"
   skus:
-    bh_sc1:
+    bh_sc1_high_power:
       timeout: 45
       tier: 3
       release_ready: false
