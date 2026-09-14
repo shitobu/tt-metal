@@ -4,7 +4,7 @@
 
 """Hardware-free tests for merging a run's shards into one file per arch.
 
-The warehouse wants one file per run; CI produces ten. These cover the two
+The warehouse wants one file per run; CI produces thirty. These cover the two
 columns the merge has to unify, the two it must refuse to paper over, and the
 shape of the run_id it mints.
 """
@@ -21,10 +21,10 @@ from helpers.perf.core import (
 from helpers.perf.parquet import write_run_batch
 
 # Split groups per architecture, as tests/pipeline_reorg/llk_perf_tests.yaml
-# defines them -- llk_perf_wormhole group 1/5 .. 5/5, and the same for
+# defines them -- llk_perf_wormhole group 1/15 .. 15/15, and the same for
 # blackhole -- which .github/workflows/llk-perf-impl.yaml turns into one job
 # each.
-SPLIT_GROUPS = 5
+SPLIT_GROUPS = 15
 ARCHES = ("wormhole", "blackhole")
 ROWS_PER_SHARD = 2
 
@@ -69,7 +69,7 @@ def _sharded_nightly(root, run="42", *, commit_sha="deadbeef"):
                 run_id=run,
                 arch=arch,
                 shard=shard,
-                timestamp=f"2026-09-01T0{3 + shard}:10:00+00:00",
+                timestamp=f"2026-09-01T{3 + shard:02d}:10:00+00:00",
                 commit_sha=commit_sha,
             )
 

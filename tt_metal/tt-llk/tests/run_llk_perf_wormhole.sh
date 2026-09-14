@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# Wormhole LLK perf runner, shared by the 5 wh matrix groups in
+# Wormhole LLK perf runner, shared by the 15 wh matrix groups in
 # tests/pipeline_reorg/llk_perf_tests.yaml (the group index is passed in).
 #
 # pytest-split sharding: compile this shard's items (producer), then measure
