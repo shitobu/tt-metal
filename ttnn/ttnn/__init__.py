@@ -29,7 +29,9 @@ def load_config_from_dictionary(config, from_file=False):
     global CONFIG
     for key, value in config.items():
         if hasattr(CONFIG, key):
-            if getattr(CONFIG, key) is not None:
+            # null means "unset" (save_config_to_json_file writes it for report_name), so it is stored as None
+            # rather than coerced to the attribute's current type, which would give e.g. PosixPath(None).
+            if value is not None and getattr(CONFIG, key) is not None:
                 value = type(getattr(CONFIG, key))(value)
             setattr(CONFIG, key, value)
         elif from_file:
@@ -84,21 +86,26 @@ def manage_config(name: str, value):
     original_value = getattr(CONFIG, name)
     setattr(CONFIG, name, value)
     logger.debug(f"Set ttnn.CONFIG.{name} to {value}")
-    yield
     try:
-        setattr(CONFIG, name, original_value)
-        logger.debug(f"Restored ttnn.CONFIG.{name} to {original_value}")
-    except Exception as e:
-        # Some config attributes (e.g., path-like) do not accept None; fallback to empty string
-        # afuller
-        if original_value is None:
-            try:
-                setattr(CONFIG, name, "")
-                logger.debug(f"Restored ttnn.CONFIG.{name} to empty string as a substitute for None")
-            except Exception as e2:
-                logger.error(f"{e2}. ERROR_A! Cannot reset ttnn.CONFIG.{name} to a safe default (original was None)")
-        else:
-            logger.error(f"{e}. ERROR_A! Cannot reset ttnn.CONFIG.{name} to {original_value}")
+        yield
+    finally:
+        # Restore even when the block raises, or the value leaks into everything that runs afterwards.
+        try:
+            setattr(CONFIG, name, original_value)
+            logger.debug(f"Restored ttnn.CONFIG.{name} to {original_value}")
+        except Exception as e:
+            # Some config attributes (e.g., path-like) do not accept None; fallback to empty string
+            # afuller
+            if original_value is None:
+                try:
+                    setattr(CONFIG, name, "")
+                    logger.debug(f"Restored ttnn.CONFIG.{name} to empty string as a substitute for None")
+                except Exception as e2:
+                    logger.error(
+                        f"{e2}. ERROR_A! Cannot reset ttnn.CONFIG.{name} to a safe default (original was None)"
+                    )
+            else:
+                logger.error(f"{e}. ERROR_A! Cannot reset ttnn.CONFIG.{name} to {original_value}")
 
 
 from ttnn._ttnn.multi_device import (
