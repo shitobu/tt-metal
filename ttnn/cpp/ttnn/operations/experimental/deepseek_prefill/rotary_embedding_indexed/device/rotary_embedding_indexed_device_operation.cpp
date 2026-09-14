@@ -75,7 +75,18 @@ void validate_runtime_args(
         cos.storage_type());
     const auto& mesh_view = cos.device()->get_view();
     TT_FATAL(mesh_view.is_mesh_2d(), "rotary_embedding_indexed requires a 2D mesh");
-    const uint32_t chunk_local_t = input.padded_shape()[-2] / TILE_HEIGHT;
+    if (args.seq_subshard_axis.has_value()) {
+        TT_FATAL(
+            args.seq_subshard_axis.value() < 2 && args.seq_subshard_axis.value() != args.cluster_axis,
+            "seq_subshard_axis must be a different mesh axis from cluster_axis");
+        TT_FATAL(input.logical_shape()[-2] % TILE_HEIGHT == 0, "sequence subshards must contain whole query tiles");
+    }
+    const uint32_t subshard_factor =
+        args.seq_subshard_axis.has_value()
+            ? (args.seq_subshard_axis.value() == 0 ? mesh_view.num_rows() : mesh_view.num_cols())
+            : 1;
+    // Cache tables keep the ORIGINAL full-SP slab geometry, even when Q contains only a TP window.
+    const uint32_t chunk_local_t = (input.padded_shape()[-2] / TILE_HEIGHT) * subshard_factor;
     // chunk_local_t is the per-chip chunk height in tiles and is used by the reader as a
     // divisor/modulus to derive the boundary chip; a zero-height input chunk would divide by zero.
     TT_FATAL(chunk_local_t > 0, "input chunk seq dim ({}) must be at least one tile", input.padded_shape()[-2]);
@@ -262,6 +273,7 @@ ttsl::hash::hash_t RotaryEmbeddingIndexedDeviceOperation::compute_program_hash(
     auto hash = tt::tt_metal::operation::hash_operation<RotaryEmbeddingIndexedDeviceOperation>(
         tensor_args.metadata.has_value(),
         args.cluster_axis,
+        args.seq_subshard_axis,
         args.compute_kernel_config,
         args.output_mem_config,
         tensor_args.input.tensor_spec(),
@@ -319,6 +331,14 @@ RotaryEmbeddingIndexedDeviceOperation::MeshWorkloadFactory::create_at(
     const uint32_t sp_factor = (args.cluster_axis == 0) ? mesh_view.num_rows() : mesh_view.num_cols();
     const uint32_t my_sp_coord =
         ::ttnn::ccl::get_linearized_index_from_physical_coord(tensor_args.cos, coord, args.cluster_axis);
+    const uint32_t subshard_factor =
+        args.seq_subshard_axis.has_value()
+            ? (args.seq_subshard_axis.value() == 0 ? mesh_view.num_rows() : mesh_view.num_cols())
+            : 1;
+    const uint32_t subshard_coord = args.seq_subshard_axis.has_value()
+                                        ? ::ttnn::ccl::get_linearized_index_from_physical_coord(
+                                              tensor_args.input, coord, args.seq_subshard_axis.value())
+                                        : 0;
 
     auto [math_fidelity, math_approx_mode, fp32_dest_acc_en, packer_l1_acc, dst_full_sync_en] =
         get_compute_kernel_config_args(mesh_device->arch(), args.compute_kernel_config);
@@ -473,7 +493,9 @@ RotaryEmbeddingIndexedDeviceOperation::MeshWorkloadFactory::create_at(
              {"rotary_Ht", rotary_seq_len_t},
              {"tile_height", TILE_HEIGHT},  // reader divides kv_actual_global (tokens) into tiles
              {"my_sp_coord", my_sp_coord},
-             {"sp_factor", sp_factor}},
+             {"sp_factor", sp_factor},
+             {"chunk_local_t", seq_len_t * subshard_factor},
+             {"query_offset_t", seq_len_t * subshard_coord}},
         .runtime_arg_schema = reader_schema,
         .hw_config = create_reader_datamovement_config(mesh_device->arch())};
 
@@ -678,7 +700,8 @@ ttnn::Tensor rotary_embedding_indexed(
     uint32_t kv_actual_global,
     uint32_t cluster_axis,
     const std::optional<MemoryConfig>& memory_config,
-    const std::optional<const ttnn::DeviceComputeKernelConfig>& compute_kernel_config) {
+    const std::optional<const ttnn::DeviceComputeKernelConfig>& compute_kernel_config,
+    const std::optional<uint32_t>& seq_subshard_axis) {
     using OperationType = ttnn::operations::experimental::deepseek_prefill::rotary_embedding_indexed::
         RotaryEmbeddingIndexedDeviceOperation;
 
@@ -696,6 +719,7 @@ ttnn::Tensor rotary_embedding_indexed(
 
     auto attrs = OperationType::operation_attributes_t{
         .cluster_axis = cluster_axis,
+        .seq_subshard_axis = seq_subshard_axis,
         .kv_actual_global = kv_actual_global,
         .output_mem_config = out_mem_config,
         .compute_kernel_config = kernel_config_val,

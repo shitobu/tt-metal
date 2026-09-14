@@ -1837,8 +1837,9 @@ class ttMLA:
         if q_seq_sharded is not q:
             ttnn.deallocate(q_seq_sharded)
 
-        # indices must match q_rm's seq sharding. Incoming is replicated full-glob [1,1,S_global,k] or
-        # SP-sharded [1,1,S/sp,k]; under reshard the row count must drop to S/(sp·tp), so split over TP.
+        # Indices must match q_rm's sequence sharding. Direct TP sequence shards [1,1,S/(sp*tp),k]
+        # already match after head-to-sequence redistribution. Partition legacy globally replicated
+        # [1,1,S_global,k] or SP-only [1,1,S/sp,k] inputs over SP and TP as needed.
         idx = indices
         if sp > 1 and indices.shape[2] == seq_len_local * sp:
             # Replicated full-glob indices → reshard rows onto the SP axis (inverse of all_gather).
