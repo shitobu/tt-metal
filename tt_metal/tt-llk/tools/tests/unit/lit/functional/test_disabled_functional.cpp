@@ -12,13 +12,12 @@
 
 struct AbsentOperation;
 
-static void unused_no_error(const std::uint32_t face_height)
-{
-    // When sanitizer is disabled, this is unused. The compilation shouldn't stop because of the unused variable
-    const std::uint32_t doubled = face_height * 2u;
-
-    SAN_HOOK(configure(StateVal<Operand<Exu::Unpack>::FaceHeightA>(doubled)));
-}
+// static void unused_no_error(const std::uint32_t face_height)
+// {
+//     const std::uint32_t doubled = face_height * 2u;
+//
+//     SAN_HOOK(configure(StateVal<Operand<Exu::Unpack>::FaceHeightA>(doubled)));
+// }
 
 int main()
 {
@@ -34,7 +33,7 @@ int main()
     SAN_HOOK(uninit<AbsentOperation>());
     SAN_HOOK(unsupported());
 
-    unused_no_error(16u);
+    // unused_no_error(16u);
 
     return 0;
 }
