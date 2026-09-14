@@ -17,6 +17,7 @@ from typing import Any, Iterable
 from ..llk_params import DestSync, MathFidelity, PerfRunType
 from ..test_variant_parameters import (
     CRK_TILE_DIMM,
+    DEST_INDEX,
     DEST_SYNC,
     IN_TILE_DIMS,
     INPUT_DIMENSIONS,
@@ -150,12 +151,31 @@ class MathMatmulRelevance(MatmulRelevance):
     _EXTRA = frozenset(
         {NUM_BLOCKS, PARTIAL_FACE, IN_TILE_DIMS, UNPACK_TRANS_WITHIN_FACE}
     )
+    # PACK INIT configures faces / partial / tile rows; TILE_LOOP uses DST_INDEX.
+    # SPEED_OF_LIGHT inlines these, so dropping them compiles 4-face 32-row pack.
+    _PACK_EXTRA = frozenset(
+        {NUM_BLOCKS, NUM_FACES, PARTIAL_FACE, IN_TILE_DIMS, DEST_INDEX}
+    )
     unpack_runtimes = MatmulRelevance.unpack_runtimes | _EXTRA
-    math_runtimes = MatmulRelevance.math_runtimes | _EXTRA
-    pack_runtimes = MatmulRelevance.pack_runtimes | frozenset({NUM_BLOCKS})
-    cong_runtimes = MatmulRelevance.cong_runtimes | _EXTRA
+    math_runtimes = MatmulRelevance.math_runtimes | _EXTRA | frozenset({DEST_INDEX})
+    pack_runtimes = MatmulRelevance.pack_runtimes | _PACK_EXTRA
+    cong_runtimes = MatmulRelevance.cong_runtimes | _EXTRA | frozenset({DEST_INDEX})
     pack_runtime_fields = MatmulRelevance.pack_runtime_fields | frozenset(
-        {"num_blocks"}
+        {
+            "num_blocks",
+            "num_faces",
+            "num_faces_A",
+            "num_faces_B",
+            "partial_a",
+            "partial_face_pack",
+            "partial_b",
+            "partial_face_math",
+            "in0_r_dim",
+            "in0_c_dim",
+            "in1_r_dim",
+            "in1_c_dim",
+            "dst_index",
+        }
     )
 
 
@@ -167,9 +187,9 @@ _PACK_BLOCK_RUNTIMES = frozenset(
 class PackRelevance(PerfRelevance):
     math_templates = frozenset({DEST_SYNC})
     unpack_runtimes = _PACK_BLOCK_RUNTIMES
-    math_runtimes = _PACK_BLOCK_RUNTIMES
-    pack_runtimes = _PACK_BLOCK_RUNTIMES | frozenset({RELU_CONFIG})
-    cong_runtimes = _PACK_BLOCK_RUNTIMES | frozenset({RELU_CONFIG})
+    math_runtimes = _PACK_BLOCK_RUNTIMES | frozenset({DEST_INDEX})
+    pack_runtimes = _PACK_BLOCK_RUNTIMES | frozenset({RELU_CONFIG, DEST_INDEX})
+    cong_runtimes = _PACK_BLOCK_RUNTIMES | frozenset({RELU_CONFIG, DEST_INDEX})
 
 
 class PackUntilizeRelevance(PerfRelevance):
@@ -180,6 +200,10 @@ class PackUntilizeRelevance(PerfRelevance):
     )
     pack_templates = None
     pack_runtimes = None
+    # INPUT_DIMENSIONS is a template here. Default cong_templates is DEST_SYNC
+    # only, which drops rt/ct from the execute key and collides layouts that
+    # share tile_cnt (e.g. 4x5 vs 5x4).
+    cong_templates = None
 
 
 class UnpackTilizeRelevance(PerfRelevance):
@@ -207,8 +231,15 @@ PACK_UNTILIZE_RELEVANCE = PackUntilizeRelevance()
 UNPACK_TILIZE_RELEVANCE = UnpackTilizeRelevance()
 
 
+# pin_template only rewrites these. Any other template stays in the header, so
+# execute_key must keep it even when spec.templates omits the type.
+_PINNABLE_TEMPLATES = frozenset({MATH_FIDELITY, DEST_SYNC, THROTTLE_LEVEL})
+
+
 def pin_template(param: TemplateParameter) -> TemplateParameter:
     """Canonical compile-time stand-in for a template that TILE_LOOP cannot see."""
+    if type(param) not in _PINNABLE_TEMPLATES:
+        return param
     if isinstance(param, MATH_FIDELITY):
         return MATH_FIDELITY(MathFidelity.LoFi)
     if isinstance(param, DEST_SYNC):
@@ -309,7 +340,13 @@ def execute_key(
     for param in templates:
         if isinstance(param, PERF_RUN_TYPE):
             continue
-        if spec is None or spec.templates is None or type(param) in spec.templates:
+        keep = (
+            spec is None
+            or spec.templates is None
+            or type(param) in spec.templates
+            or type(param) not in _PINNABLE_TEMPLATES
+        )
+        if keep:
             template_items.extend(_dataclass_items(param))
 
     runtime_items: list[tuple[str, Any]] = []

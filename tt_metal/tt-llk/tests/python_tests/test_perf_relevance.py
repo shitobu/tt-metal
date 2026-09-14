@@ -22,6 +22,7 @@ from helpers.perf.relevance import (
     PACK_RELEVANCE,
     PACK_UNTILIZE_RELEVANCE,
     UNPACK_TILIZE_RELEVANCE,
+    RunTypeRelevance,
     execute_key,
     pin_template,
     project_runtimes,
@@ -32,13 +33,16 @@ from helpers.profiler import Profiler, ProfilerData
 from helpers.test_config import BuildMode, TestConfig
 from helpers.test_variant_parameters import (
     CRK_TILE_DIMM,
+    DEST_INDEX,
     DEST_SYNC,
+    IN_TILE_DIMS,
     INPUT_DIMENSIONS,
     LOOP_FACTOR,
     MATH_FIDELITY,
     NUM_BLOCKS,
     NUM_FACES,
     NUM_TILES_IN_BLOCK,
+    PARTIAL_FACE,
     PERF_RUN_TYPE,
     RELU_CONFIG,
     THROTTLE_LEVEL,
@@ -489,6 +493,33 @@ def test_pack_untilize_input_format_reuses_pack_not_l1():
     )
 
 
+def test_pack_untilize_same_tile_cnt_different_dims_misses_cong():
+    rt_4x5 = [INPUT_DIMENSIONS(4, 5, 1, 4)]
+    rt_5x4 = [INPUT_DIMENSIONS(5, 4, 4, 5)]
+    runtimes = [TILE_COUNT(20), LOOP_FACTOR(32)]
+    fmt = _format(DataFormat.Float16_b, DataFormat.Float16)
+    cong = PACK_UNTILIZE_RELEVANCE[PerfRunType.L1_CONGESTION]
+    pack = PACK_UNTILIZE_RELEVANCE[PerfRunType.PACK_ISOLATE]
+    assert execute_key(
+        run_type=PerfRunType.L1_CONGESTION,
+        spec=cong,
+        **_execute_kwargs("perf_pack_untilize", rt_4x5, runtimes, fmt),
+    ) != execute_key(
+        run_type=PerfRunType.L1_CONGESTION,
+        spec=cong,
+        **_execute_kwargs("perf_pack_untilize", rt_5x4, runtimes, fmt),
+    )
+    assert execute_key(
+        run_type=PerfRunType.PACK_ISOLATE,
+        spec=pack,
+        **_execute_kwargs("perf_pack_untilize", rt_4x5, runtimes, fmt),
+    ) != execute_key(
+        run_type=PerfRunType.PACK_ISOLATE,
+        spec=pack,
+        **_execute_kwargs("perf_pack_untilize", rt_5x4, runtimes, fmt),
+    )
+
+
 def test_unpack_tilize_output_format_reuses_unpack():
     runtimes = [INPUT_DIMENSIONS(2, 2, 2, 2), TILE_COUNT(4), LOOP_FACTOR(256)]
     fmt_a = _format(DataFormat.Float16, DataFormat.Float16)
@@ -539,3 +570,163 @@ def test_unpack_tilize_sol_pack_keeps_dim_tile_cnt_invariant():
     dims = next(p for p in projected if isinstance(p, INPUT_DIMENSIONS))
     tiles = next(p for p in projected if isinstance(p, TILE_COUNT))
     assert dims.full_rt_dim * dims.full_ct_dim == tiles.tile_cnt
+
+
+def test_execute_key_keeps_unpinnable_templates():
+    spec = RunTypeRelevance(templates=frozenset({DEST_SYNC}))
+    t_2x4 = [
+        DEST_SYNC(DestSync.Half),
+        INPUT_DIMENSIONS(2, 4, 4, 2),
+        MATH_FIDELITY(MathFidelity.LoFi),
+    ]
+    t_4x2 = [
+        DEST_SYNC(DestSync.Half),
+        INPUT_DIMENSIONS(4, 2, 2, 4),
+        MATH_FIDELITY(MathFidelity.LoFi),
+    ]
+    t_hifi = [
+        DEST_SYNC(DestSync.Half),
+        INPUT_DIMENSIONS(2, 4, 4, 2),
+        MATH_FIDELITY(MathFidelity.HiFi4),
+    ]
+    runtimes = [LOOP_FACTOR(32)]
+    assert execute_key(
+        run_type=PerfRunType.L1_CONGESTION,
+        spec=spec,
+        **_execute_kwargs("perf_unpinnable", t_2x4, runtimes),
+    ) != execute_key(
+        run_type=PerfRunType.L1_CONGESTION,
+        spec=spec,
+        **_execute_kwargs("perf_unpinnable", t_4x2, runtimes),
+    )
+    assert execute_key(
+        run_type=PerfRunType.L1_CONGESTION,
+        spec=spec,
+        **_execute_kwargs("perf_unpinnable", t_2x4, runtimes),
+    ) == execute_key(
+        run_type=PerfRunType.L1_CONGESTION,
+        spec=spec,
+        **_execute_kwargs("perf_unpinnable", t_hifi, runtimes),
+    )
+
+
+def _math_matmul_runtimes(
+    *,
+    num_faces=4,
+    partial=False,
+    in0_r=32,
+    dest_index=0,
+    num_blocks=1,
+    kt=1,
+):
+    return [
+        UNPACK_TRANS_FACES(Transpose.No),
+        NUM_FACES(num_faces, num_faces, num_faces),
+        LOOP_FACTOR(64),
+        CRK_TILE_DIMM(2, 2, kt),
+        NUM_BLOCKS(num_blocks),
+        PARTIAL_FACE(
+            partial_a=partial,
+            partial_face_pack=partial,
+            partial_b=partial,
+            partial_face_math=partial,
+        ),
+        IN_TILE_DIMS(in0_r, 32, 32, 32),
+        DEST_INDEX(dest_index),
+    ]
+
+
+def test_math_matmul_pack_keeps_faces_partial_tile_dims():
+    templates = [
+        MATH_FIDELITY(MathFidelity.LoFi),
+        DEST_SYNC(DestSync.Half),
+        THROTTLE_LEVEL(0),
+    ]
+    base = _math_matmul_runtimes()
+    variants = (
+        _math_matmul_runtimes(num_faces=2),
+        _math_matmul_runtimes(partial=True),
+        _math_matmul_runtimes(in0_r=16),
+    )
+    for run_type in (PerfRunType.PACK_ISOLATE, PerfRunType.L1_CONGESTION):
+        spec = MATH_MATMUL_RELEVANCE[run_type]
+        for runtimes in variants:
+            assert execute_key(
+                run_type=run_type,
+                spec=spec,
+                **_execute_kwargs("perf_math_matmul", templates, base),
+            ) != execute_key(
+                run_type=run_type,
+                spec=spec,
+                **_execute_kwargs("perf_math_matmul", templates, runtimes),
+            )
+
+
+def test_math_matmul_sol_pack_keeps_faces_partial_tile_dims():
+    runtimes = _math_matmul_runtimes(num_faces=2, partial=True, in0_r=16)
+    projected = project_runtimes(
+        runtimes, MATH_MATMUL_RELEVANCE[PerfRunType.PACK_ISOLATE]
+    )
+    faces = next(p for p in projected if isinstance(p, NUM_FACES))
+    partial = next(p for p in projected if isinstance(p, PARTIAL_FACE))
+    dims = next(p for p in projected if isinstance(p, IN_TILE_DIMS))
+    dest = next(p for p in projected if isinstance(p, DEST_INDEX))
+    assert faces.num_faces == 2
+    assert partial.partial_face_pack is True
+    assert dims.in0_r_dim == 16
+    assert dest.dst_index == 0
+
+
+def test_pack_dest_index_hits_unpack_misses_pack_math_cong():
+    templates = [DEST_SYNC(DestSync.Half)]
+    shared = [
+        NUM_BLOCKS(1),
+        NUM_TILES_IN_BLOCK(1),
+        LOOP_FACTOR(32),
+        NUM_FACES(),
+        RELU_CONFIG(0),
+    ]
+    rt_0 = shared + [DEST_INDEX(0)]
+    rt_1 = shared + [DEST_INDEX(1)]
+    hits = (PerfRunType.UNPACK_ISOLATE,)
+    misses = (
+        PerfRunType.MATH_ISOLATE,
+        PerfRunType.PACK_ISOLATE,
+        PerfRunType.L1_CONGESTION,
+    )
+    for run_type in hits:
+        spec = PACK_RELEVANCE[run_type]
+        assert execute_key(
+            run_type=run_type,
+            spec=spec,
+            **_execute_kwargs("perf_pack", templates, rt_0),
+        ) == execute_key(
+            run_type=run_type,
+            spec=spec,
+            **_execute_kwargs("perf_pack", templates, rt_1),
+        )
+    for run_type in misses:
+        spec = PACK_RELEVANCE[run_type]
+        assert execute_key(
+            run_type=run_type,
+            spec=spec,
+            **_execute_kwargs("perf_pack", templates, rt_0),
+        ) != execute_key(
+            run_type=run_type,
+            spec=spec,
+            **_execute_kwargs("perf_pack", templates, rt_1),
+        )
+
+
+def test_pack_sol_pack_keeps_dest_index():
+    runtimes = [
+        NUM_BLOCKS(1),
+        NUM_TILES_IN_BLOCK(1),
+        LOOP_FACTOR(32),
+        NUM_FACES(),
+        RELU_CONFIG(0),
+        DEST_INDEX(1),
+    ]
+    projected = project_runtimes(runtimes, PACK_RELEVANCE[PerfRunType.PACK_ISOLATE])
+    dest = next(p for p in projected if isinstance(p, DEST_INDEX))
+    assert dest.dst_index == 1
