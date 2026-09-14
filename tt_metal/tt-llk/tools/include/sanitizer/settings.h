@@ -23,6 +23,10 @@
 
 #pragma once
 
+// SAN_FUNC : Applied to the sanitizer's own functions so they are built for size rather than
+//            speed. The sanitizer is the slow path; the kernel code around it keeps -O3.
+#define SAN_FUNC [[gnu::optimize("Os")]]
+
 #ifndef LLK_SAN_ENABLE
 
 #if defined(LLK_SAN_SETTING_PEDANTIC)
